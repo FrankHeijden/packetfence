@@ -197,6 +197,33 @@ sub deauthenticateMacSSH {
     $chan->write("$cli_cmd\n");
     sleep(1);
 
+    # try to read stuff lmao
+    $SIG{ALRM} = sub { die "Timeout\n" };
+    eval {
+        alarm(15);
+
+        while (1) {
+            my $buffer = "";
+            my $read_size = 1024;
+            my $len = $chan->read($buffer, $read_size);
+            if ($len) {
+                print "Read: $buffer\n";
+            } else {
+                last;
+            }
+        }
+
+        alarm(0);
+    };
+    if ($@) {
+        chomp $@;
+        if ($@ eq "Timeout") {
+            $logger->warn("Timeout occurred while reading from channel");
+        } else {
+            die $@;
+        }
+    }
+
     # Deauthenticate the mac address
     my @commands = ("enable", "configure", "interface 0/$port", "shutdown", "no shutdown");
     foreach my $command (@commands) {
