@@ -21,6 +21,7 @@ use pf::log;
 
 use base ('pf::Switch::Ubiquiti');
 use pf::util qw(clean_mac);
+use pf::locationlog;
 use pf::constants;
 use pf::config qw(
     $WIRED_802_1X
@@ -63,8 +64,9 @@ sub wiredeauthTechniques {
     my ($self, $method, $connection_type) = @_;
     my $logger = $self->logger;
     if ($connection_type == $WIRED_802_1X) {
-        my $default = $SNMP::SNMP;
+        my $default = $SNMP::SSH;
         my %tech = (
+            $SNMP::SSH  => 'deauthenticateMacSSH',
             $SNMP::SNMP => 'dot1xPortReauthenticate',
         );
 
@@ -74,8 +76,9 @@ sub wiredeauthTechniques {
         return $method,$tech{$method};
     }
     if ($connection_type == $WIRED_MAC_AUTH) {
-        my $default = $SNMP::SNMP;
+        my $default = $SNMP::SSH;
         my %tech = (
+            $SNMP::SSH  => 'deauthenticateMacSSH',
             $SNMP::SNMP => 'handleReAssignVlanTrapForWiredMacAuth',
         );
 
@@ -136,6 +139,75 @@ sub returnAuthorizeRead {
     my $rule = $filter->test('returnAuthorizeRead', $args);
     ($radius_reply_ref, $status) = $filter->handleAnswerInRule($rule,$args,$radius_reply_ref);
     return [$status, %$radius_reply_ref];
+}
+
+
+=head2 deauthenticateMacSSH
+
+deauthenticate a MAC address from wireless network using SSH
+
+=cut
+
+sub deauthenticateMacSSH {
+    my ( $self, ,$ifindex, $mac ) = @_;
+    my $logger = $self->logger;
+
+    if ( !$self->isProductionMode() ) {
+        $logger->info("not in production mode ... we won't deauthenticate $mac");
+        return 1;
+    }
+
+    if ( length($mac) != 17 ) {
+        $logger->error("MAC format is incorrect ($mac). Should be xx:xx:xx:xx:xx:xx");
+        return 1;
+    }
+
+    my $ssh;
+
+    my $send_disconnect_to = $self->{'_ip'};
+    # but if controllerIp is set, we send there
+    if (defined($self->{'_controllerIp'}) && $self->{'_controllerIp'} ne '') {
+        $logger->info("controllerIp is set, we will use controller $self->{_controllerIp} to perform deauth");
+        $send_disconnect_to = $self->{'_controllerIp'};
+    }
+
+    eval {
+        require Net::SSH2;
+        $ssh = Net::SSH2->new();
+        $ssh->connect($send_disconnect_to);
+        $ssh->auth_password($self->{_cliUser},$self->{_cliPwd});
+    };
+
+    if ($@) {
+        $logger->error("Unable to connect to ".$send_disconnect_to." using ".$self->{_cliTransport}.". Failed with $@");
+        return;
+    }
+
+    $mac = uc($mac);
+    my $locationlog_mac = locationlog_last_entry_mac($mac);
+    my $port = $locationlog_mac->{'port'};
+
+    $logger->info("Deauthenticating mac $mac on port $port");
+    my $chan = $ssh->channel();
+    $chan->shell();
+
+    # Initiate CLI
+    my $cli_cmd = "cli";
+    $logger->warn("Sending CLI command '$cli_cmd'");
+    $chan->write("$cli_cmd\n");
+    sleep(1);
+
+    # Deauthenticate the mac address
+    my @commands = ("enable", "configure", "interface 0/$port", "shutdown", "no shutdown");
+    foreach my $command (@commands) {
+        $logger->warn("Sending CLI command '$command'");
+        $chan->write("$command\n");
+        sleep(1);
+    }
+    $logger->warn("Disconnecting from SSH");
+    $ssh->disconnect();
+
+    return 1;
 }
 
 
