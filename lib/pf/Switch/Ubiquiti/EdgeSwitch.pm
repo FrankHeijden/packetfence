@@ -202,7 +202,7 @@ sub deauthenticateMacSSH {
     foreach my $command (@commands) {
         $logger->warn("Sending CLI command '$command'");
         $chan->write("$command\n");
-        sleep(1);
+        sleep(0.25);
     }
     $logger->warn("Disconnecting from SSH");
     $ssh->disconnect();
