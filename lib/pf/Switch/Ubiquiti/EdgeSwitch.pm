@@ -188,37 +188,33 @@ sub deauthenticateMacSSH {
     my $port = $locationlog_mac->{'port'};
 
     $logger->info("Deauthenticating mac $mac on port $port");
-    my $chan = $ssh->channel();
-    $chan->shell();
+    my $chan;
 
     # Initiate CLI
     my $cli_cmd = "cli";
-    $logger->warn("Sending CLI command '$cli_cmd'");
-    $chan->write("$cli_cmd\n");
-    sleep(1);
-
-    # try to read stuff lmao
     $SIG{ALRM} = sub { die "Timeout\n" };
     eval {
         alarm(15);
+        for my $cli_attempt (0..10) {
+            $chan = $ssh->channel();
+            $chan->shell();
 
-        while (1) {
-            my $buffer = "";
-            my $read_size = 1024;
-            my $len = $chan->read($buffer, $read_size);
-            if ($len) {
-                print "Read: $buffer\n";
-            } else {
+            $logger->warn("Sending CLI command '$cli_cmd' (attempt #$cli_attempt)");
+            $chan->write("$cli_cmd\n");
+            sleep(1);
+
+            my $buf = "";
+            $chan->read($buf, 2048);
+            if (index($buf, "(UBNT)") != -1) {
                 last;
             }
         }
-
         alarm(0);
     };
     if ($@) {
         chomp $@;
         if ($@ eq "Timeout") {
-            $logger->warn("Timeout occurred while reading from channel");
+            $logger->error("Unable to execute command '$cli_cmd'");
         } else {
             die $@;
         }
